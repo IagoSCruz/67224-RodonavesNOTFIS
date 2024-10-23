@@ -1,2 +1,5 @@
 .venv
 .env
+build
+main.spec
+dist
