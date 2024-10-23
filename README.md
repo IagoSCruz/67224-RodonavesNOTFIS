@@ -1,0 +1,2 @@
+# 67224-RodonavesNOTFIS
+ O script foi desenvolvido com o propósito de automatizar uma ação diária executada pelo time operacional da Stihl de ter que baixar os arquivos EDI da transportadora Rodonaves pelo TMS e, após, enviar por e-mail ao canal da transportadora. Com esse desenvolvimento, o script faz o acesso ao TMS, baixa e extrair os arquivos no dia corrente e deposita diretamente na pasta SFTP da Rodonaves.
