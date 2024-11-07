@@ -2,7 +2,7 @@ import requests
 import paramiko
 from zipfile import ZipFile
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import os
 from dotenv import load_dotenv
@@ -23,14 +23,19 @@ PASSWORD = os.getenv('PASSWORD')
 SFTP_USERNAME = os.getenv('SFTP_USERNAME')
 SFTP_PASSWORD = os.getenv('SFTP_PASSWORD')
 
+# Endpoint do Slack para notificações
+SLACK_WEBHOOK_URL = os.getenv('SLACK_WEBHOOK_URL')
+
 # ID fixo da transportadora
 TRANSPORTADORA_ID = '31'
 
-def pegar_data_atual():
-    """Define automaticamente o intervalo de datas como a data corrente."""
+def pegar_intervalo_data():
+    """Define o intervalo de datas como o dia atual e o dia anterior."""
     data_hoje = datetime.now().strftime("%Y-%m-%d")
-    logging.info(f"Usando a data corrente: {data_hoje} para ambos início e fim do intervalo.")
-    return data_hoje, data_hoje
+    data_anterior = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    logging.info(f"Usando o intervalo de datas: de {data_anterior} até {data_hoje}.")
+    return data_anterior, data_hoje
 
 def autenticar():
     """Autentica no GraphQL usando as credenciais do .env."""
@@ -80,7 +85,7 @@ def autenticar():
                 logging.error("Token de acesso não encontrado.")
         else:
             logging.error("Erro na estrutura de resposta da autenticação.")
-
+        
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro na autenticação via GraphQL: {e}")
         exit(1)
@@ -158,46 +163,75 @@ def conectar_sftp():
         exit(1)
 
 def extrair_e_enviar_arquivos(zip_file, sftp, caminho_sftp, data_atual):
+    """Extrai os arquivos do ZIP, adiciona a data atual ao nome e os envia para o SFTP sem modificar o conteúdo."""
     with ZipFile(zip_file, 'r') as zip_ref:
         for nome_arquivo in zip_ref.namelist():
             if nome_arquivo.endswith('.txt'):
-                f"{nome_arquivo.rsplit('.', 1)[0]}-{data_atual}.txt"
-                logging.info(f"Extraindo e enviando {nome_arquivo} para o SFTP...")
+                # Gera o novo nome com o sufixo da data
+                nome_arquivo_com_data = f"{nome_arquivo.rsplit('.', 1)[0]}-{data_atual}.txt"
+                logging.info(f"Extraindo e enviando {nome_arquivo_com_data} para o SFTP...")
 
                 # Lê o arquivo diretamente do ZIP
                 with zip_ref.open(nome_arquivo) as arquivo:
                     # Faz o upload diretamente do conteúdo do arquivo
-                    with sftp.open(f"{caminho_sftp}/{nome_arquivo}", 'wb') as arquivo_sftp:
+                    with sftp.open(f"{caminho_sftp}/{nome_arquivo_com_data}", 'wb') as arquivo_sftp:
                         arquivo_sftp.write(arquivo.read())
 
-                logging.info(f"Arquivo {nome_arquivo} enviado para o SFTP com sucesso!")
+                logging.info(f"Arquivo {nome_arquivo_com_data} enviado para o SFTP com sucesso!")
 
+def enviar_notificacao_slack(mensagem):
+    """Envia uma notificação ao Slack usando um webhook."""
+    if not SLACK_WEBHOOK_URL:
+        logging.error("A URL do Webhook do Slack não está configurada.")
+        return
+
+    payload = {
+        "text": mensagem
+    }
+
+    try:
+        response = requests.post(SLACK_WEBHOOK_URL, json=payload)
+        if response.status_code == 200:
+            logging.info("Notificação enviada ao Slack com sucesso.")
+        else:
+            logging.error(f"Falha ao enviar notificação ao Slack. Código de status: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Erro ao enviar notificação ao Slack: {e}")
 
 def main():
-    # Define o intervalo de datas automaticamente para o dia corrente
-    data_inicial, data_final = pegar_data_atual()
+    try:
+        # Define o intervalo de datas como o dia atual e o anterior
+        data_inicial, data_final = pegar_intervalo_data()
 
-    # Autentica no GraphQL
-    token_acesso = autenticar()
+        # Autentica no GraphQL
+        token_acesso = autenticar()
 
-    # Obter a URL para download
-    logging.info("Obtendo o link de download...")
-    url_download = obter_url_download(token_acesso, data_inicial, data_final)
+        # Obter a URL para download
+        logging.info("Obtendo o link de download...")
+        url_download = obter_url_download(token_acesso, data_inicial, data_final)
 
-    # Baixar o arquivo ZIP
-    logging.info("Baixando o arquivo ZIP...")
-    zip_file = baixar_arquivo_zip(url_download)
+        # Baixar o arquivo ZIP
+        logging.info("Baixando o arquivo ZIP...")
+        zip_file = baixar_arquivo_zip(url_download)
 
-    # Conectar ao SFTP
-    logging.info("Conectando ao SFTP...")
-    sftp, transporte = conectar_sftp()
+        # Conectar ao SFTP
+        logging.info("Conectando ao SFTP...")
+        sftp, transporte = conectar_sftp()
 
-    # Extrair e enviar os arquivos diretamente para o SFTP
-    extrair_e_enviar_arquivos(zip_file, sftp, SFTP_PATH, data_inicial)
+        # Extrair e enviar os arquivos diretamente para o SFTP, adicionando a data atual ao nome dos arquivos
+        extrair_e_enviar_arquivos(zip_file, sftp, SFTP_PATH, data_final)
 
-    # Fechar a conexão SFTP
-    sftp.close()
-    transporte.close()
+        # Fechar a conexão SFTP
+        sftp.close()
+        transporte.close()
+
+        # Enviar notificação de sucesso
+        enviar_notificacao_slack(f"Script EDI STIHL-RODONAVES executado com sucesso para as datas {data_inicial} - {data_final}.")
+
+    except Exception as e:
+        logging.error(f"Ocorreu um erro durante a execução: {e}")
+        # Enviar notificação de falha
+        enviar_notificacao_slack(f"Falha na execução do script EDI: {str(e)}")
 
 if __name__ == "__main__":
     main()
